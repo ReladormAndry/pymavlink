@@ -1,6 +1,5 @@
 pragma Ada_2022;
 
-with MAVLink.V2;
 with MAVLink.X25CRC;
 
 package body MAVLink.V2 is
@@ -100,62 +99,62 @@ package body MAVLink.V2 is
       Header : V2_Header with Import,
         Address => Incoming.Income_Buffer'Address;
    begin
+      if Incoming.Unsupported then
+         Incoming.Unsupported := False;
+
+         --  the V1 message length byte, claculate how many
+         --  bytes to skip (length + 8 - 2[STX,LEN])
+         Incoming.Discard_Remaining := Natural (Value) + 6;
+         return False;
+      end if;
+
       if Incoming.Discard_Remaining > 0 then
+         --  skip bytes of discarded message (like v1 message)
          Incoming.Discard_Remaining := Incoming.Discard_Remaining - 1;
          return False;
       end if;
+
       if Incoming.Last > 0
         and then Incoming.Position >= Incoming.Last
       then
+         --  the first byte of new message
          Clear (Incoming);
       end if;
 
-      if Incoming.Position = 0
-        and then Value /= Version_2_Code
-      then
-         return False;
+      if Incoming.Position = 0 then
+         if Value = 16#FE# then
+            --  V1 message, skip it
+            Incoming.Unsupported := True;
+            return False;
+
+         elsif Value /= Version_2_Code then
+            --  not the STX or incorrect protocol version
+            return False;
+         end if;
       end if;
 
       Incoming.Position := Incoming.Position + 1;
       Incoming.Income_Buffer (Incoming.Position) := Value;
-
-      if Incoming.Position = 3 and then (Value and 16#FE#) /= 0 then
-         --  Skip the entire unsupported frame, including any signature. Payload
-         --  bytes may contain valid-looking frames and must not be parsed again.
-         declare
-            Remaining : Natural := Natural (Header.Len) + 9;
-         begin
-            if (Value and 1) /= 0 then
-               Remaining := Remaining + 13;
-            end if;
-            if (Value and 2) /= 0 then
-               Remaining := Remaining + 3;
-            end if;
-            if (Value and 4) /= 0 then
-               Remaining := Remaining + 4;
-            end if;
-            Clear (Incoming);
-            Incoming.Discard_Remaining := Remaining;
-            return False;
-         end;
-      end if;
 
       if Incoming.Position < Packet_Payload_First then
          --  no header yet
          return False;
       end if;
 
+      --  have full header here
       if Incoming.Last = 0 then
+         --  the full size of the message is not calculated, do this
          Incoming.Last := Incoming.Income_Buffer'First +
            Packet_Payload_First + --  header
              Natural (Header.Len) + --  data len
-           1; --  x25crc checksum
+           1; --  x25crc checksum - 1
 
          if (Header.Inc_Flags and 1) > 0 then
             Incoming.Last := Incoming.Last + 13; --  SHA256 signature
          end if;
       end if;
 
+      --  check we have all message's bytes or just before the overflow
       return Incoming.Position >= Incoming.Last
         or else Incoming.Position = Incoming.Income_Buffer'Last;
    end Parse_Byte;

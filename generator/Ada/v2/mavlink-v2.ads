@@ -1,9 +1,9 @@
 
 pragma Ada_2022;
 
-with Interfaces;               use Interfaces;
-with MAVLink.Raw_Floats;       use MAVLink.Raw_Floats;
-with MAVLink.Raw_Long_Floats;  use MAVLink.Raw_Long_Floats;
+with Interfaces;              use Interfaces;
+with MAVLink.Raw_Floats;      use MAVLink.Raw_Floats;
+with MAVLink.Raw_Long_Floats; use MAVLink.Raw_Long_Floats;
 
 private with MAVLink.SHA_256;
 
@@ -11,12 +11,12 @@ package MAVLink.V2 is
 
    pragma Pure;
 
+   Maximum_Buffer_Len : constant Positive := 280;
+
+   Version_2_Code     : constant Interfaces.Unsigned_8 := 16#FD#;
+
    type Msg_Id is mod 2 ** 24 with Size => 24;
    --  Message ID has 3 bytes
-
-   type Data_Buffer is array (Positive range <>) of Interfaces.Unsigned_8;
-
-   Maximum_Buffer_Len : constant Positive := 280;
 
    type System_Id_Type is new Interfaces.Unsigned_8;
    type Component_Id_Type is new Interfaces.Unsigned_8;
@@ -31,26 +31,6 @@ package MAVLink.V2 is
 
    type Three_Boolean is (False, True, Unknown);
 
-   Version_2_Code : constant Interfaces.Unsigned_8 := 16#FD#;
-
-   -- Arrays --
-
-   type Unsigned_8_Array is array (Natural range <>) of Interfaces.Unsigned_8
-     with Component_Size => 8;
-   type Unsigned_16_Array is array (Natural range <>) of Interfaces.Unsigned_16
-     with Component_Size => 16;
-   type Unsigned_32_Array is array (Natural range <>) of Interfaces.Unsigned_32
-     with Component_Size => 32;
-   type Unsigned_64_Array is array (Natural range <>) of Interfaces.Unsigned_64
-     with Component_Size => 64;
-   type Integer_8_Array is array (Natural range <>) of Interfaces.Integer_8
-     with Component_Size => 8;
-   type Integer_16_Array is array (Natural range <>) of Interfaces.Integer_16
-     with Component_Size => 16;
-   type Integer_32_Array is array (Natural range <>) of Interfaces.Integer_32
-     with Component_Size => 32;
-   type Integer_64_Array is array (Natural range <>) of Interfaces.Integer_64
-     with Component_Size => 64;
    type Short_Float_Array is array (Natural range <>) of Raw_Float
      with Component_Size => 32;
    type Long_Float_Array is array (Natural range <>) of Raw_Long_Float
@@ -295,10 +275,11 @@ private
    end record;
 
    type Incoming_Data is record
-      Income_Buffer : Data_Buffer (1 .. Maximum_Buffer_Len);
-      Position      : Natural := 0;
-      Last          : Natural := 0;
+      Income_Buffer     : Data_Buffer (1 .. Maximum_Buffer_Len);
+      Position          : Natural := 0;
+      Last              : Natural := 0;
       Discard_Remaining : Natural := 0;
+      Unsupported       : Boolean := False;
    end record;
 
    -- Connection --

@@ -8,15 +8,19 @@ Released under GNU GPL version 3 or later
 '''
 import os
 import os.path
+from pathlib import Path
+import re
 import math
 import shutil
 from operator import attrgetter
 from . import mavparse
 
-v1 = "MAVLink.V1"
+Mav = "MAVLink."
+v1 = Mav + "V1"
 v1_file = "mavlink-v1-"
-v2 = "MAVLink.V2"
+v2 = Mav + "V2"
 v2_file = "mavlink-v2-"
+both = False
 
 NAN = "0"
 
@@ -68,70 +72,76 @@ def normalize_entry_name(name):
     return normalize_name(name, "Entry")
 
 field_types = {
-    'uint8_t' : 'Interfaces.Unsigned_8',
+    'uint8_t'  : 'Interfaces.Unsigned_8',
     'uint16_t' : 'Interfaces.Unsigned_16',
     'uint32_t' : 'Interfaces.Unsigned_32',
     'uint64_t' : 'Interfaces.Unsigned_64',
-    'int8_t' : 'Interfaces.Integer_8',
-    'int16_t' : 'Interfaces.Integer_16',
-    'int32_t' : 'Interfaces.Integer_32',
-    'int64_t' : 'Interfaces.Integer_64',
-    'float' : 'Raw_Float',
-    'double' : 'Raw_Long_Float'}
+    'int8_t'   : 'Interfaces.Integer_8',
+    'int16_t'  : 'Interfaces.Integer_16',
+    'int32_t'  : 'Interfaces.Integer_32',
+    'int64_t'  : 'Interfaces.Integer_64',
+    'float'    : 'Raw_Float',
+    'double'   : 'Raw_Long_Float'}
 
 field_array_types = {
-    'uint8_t' : 'Unsigned_8_Array',
+    'uint8_t'  : 'Unsigned_8_Array',
     'uint16_t' : 'Unsigned_16_Array',
     'uint32_t' : 'Unsigned_32_Array',
     'uint64_t' : 'Unsigned_64_Array',
-    'int8_t' : 'Integer_8_Array',
-    'int16_t' : 'Integer_16_Array',
-    'int32_t' : 'Integer_32_Array',
-    'int64_t' : 'Integer_64_Array',
-    'float' : 'Short_Float_Array',
-    'double' : 'Long_Float_Array'}
+    'int8_t'   : 'Integer_8_Array',
+    'int16_t'  : 'Integer_16_Array',
+    'int32_t'  : 'Integer_32_Array',
+    'int64_t'  : 'Integer_64_Array',
+    'float'    : 'Short_Float_Array',
+    'double'   : 'Long_Float_Array'}
 
 array_to_float = {
     'Short_Float_Array' : 'Raw_Float',
-    'Long_Float_Array' : 'Raw_Long_Float'}
+    'Long_Float_Array'  : 'Raw_Long_Float'}
 
 field_values = {
-    'uint8_t' : '1',
+    'uint8_t'  : '1',
     'uint16_t' : '2',
     'uint32_t' : '3',
     'uint64_t' : '4',
-    'int8_t' : '5',
-    'int16_t' : '6',
-    'int32_t' : '7',
-    'int64_t' : '8',
-    'float' : 'To_Raw (9.9)',
-    'double' : 'To_Raw (10.10)'}
+    'int8_t'   : '5',
+    'int16_t'  : '6',
+    'int32_t'  : '7',
+    'int64_t'  : '8',
+    'float'    : 'To_Raw (9.9)',
+    'double'   : 'To_Raw (10.10)'}
 
 field_array_values = {
-    'uint8_t' : '[others => 1]',
+    'uint8_t'  : '[others => 1]',
     'uint16_t' : '[others => 2]',
     'uint32_t' : '[others => 3]',
     'uint64_t' : '[others => 4]',
-    'int8_t' : '[others => 5]',
-    'int16_t' : '[others => 6]',
-    'int32_t' : '[others => 7]',
-    'int64_t' : '[others => 8]',
-    'float' : '[others => To_Raw (9.9)]',
-    'double' : '[others => To_Raw (10.10)]'}
+    'int8_t'   : '[others => 5]',
+    'int16_t'  : '[others => 6]',
+    'int32_t'  : '[others => 7]',
+    'int64_t'  : '[others => 8]',
+    'float'    : '[others => To_Raw (9.9)]',
+    'double'   : '[others => To_Raw (10.10)]'}
 
 # Default invalid values for fields
 invalid = {
+    'UINT8_MIN'  : "Interfaces.Unsigned_8'First",
+    'UINT16_MIN' : "Interfaces.Unsigned_16'First",
+    'UINT32_MIN' : "Interfaces.Unsigned_32'First",
     'UINT8_MAX'  : "Interfaces.Unsigned_8'Last",
     'UINT16_MAX' : "Interfaces.Unsigned_16'Last",
     'UINT32_MAX' : "Interfaces.Unsigned_32'Last",
+    'INT8_MIN'   : "Interfaces.Integer_8'First",
+    'INT16_MIN'  : "Interfaces.Integer_16'First",
+    'INT32_MIN'  : "Interfaces.Integer_32'First",
     'INT8_MAX'   : "Interfaces.Integer_8'Last",
     'INT16_MAX'  : "Interfaces.Integer_16'Last",
-    'INT32_MAX'  : "Interfaces.Integer_32'Last"
+    'INT32_MAX'  : "Interfaces.Integer_32'Last",
 }
 
 float_types_conversions = {
-    'Raw_Float' : 'Interfaces.IEEE_Float_32',
-    'Raw_Long_Float' : 'Interfaces.IEEE_Float_64',
+    'Raw_Float'                : 'Interfaces.IEEE_Float_32',
+    'Raw_Long_Float'           : 'Interfaces.IEEE_Float_64',
     'Interfaces.IEEE_Float_32' : 'Interfaces.IEEE_Float_32'}
 
 GEN = """-------------------------------------------
@@ -144,7 +154,7 @@ def format_comment(text, tab):
     if len(sp) < 1: return ""
 
     s = "".ljust(tab) + "--  "
-    start = len (s)
+    start = len(s)
     l = start
     for i in sp:
         if l + len(i) + 1 > 79:
@@ -160,7 +170,7 @@ def format_comment(text, tab):
 def get_deprecated(deprecated, tab):
     s  = "".ljust(tab) + "------------\n"
     s += "".ljust(tab) + "--  DEPRECATED SINCE: %s REPLACED BY: %s\n" % (deprecated.since, deprecated.replaced_by)
-    s += format_comment (deprecated.explanation, tab)
+    s += format_comment(deprecated.explanation, tab)
     s += "".ljust(tab) + "------------\n\n"
     return s
 
@@ -191,7 +201,7 @@ def get_pakage_name(x, m, directory, ver, f_ver):
     return f_name, p_name
 
 # Returns package name where the tp type declared
-def find_pkg (xml, tp, ver):
+def find_pkg(xml, tp, ver):
     pkg = ""
     for x in xml:
         for t in x.enum:
@@ -201,27 +211,52 @@ def find_pkg (xml, tp, ver):
     return "%s.%s.Types.%s" % (ver, pkg, tp)
 
 # Generate record type
-def repr_bitmask(enum, size):
-    enum_name = normalize_enum_name(enum.name)
+def repr_bitmask(enum, name, size):
+    last = 0
+
+    def is_last(i):
+        nonlocal last
+        if i.end_marker:
+            last = i.value
+            return True
+        elif i.value == 0:
+            last = 0
+            return False
+        elif int(math.log(i.value, 2)) >= size * 8:
+            last += 1
+            return True
+        else:
+            last = i.value
+            return False
+
+    enum_name = normalize_enum_name(name)
     s = "   type %s is record\n" % enum_name
-    names = [i.name for i in enum.entry if not i.end_marker]
+    names = [i.name for i in enum.entry if not is_last(i)]
     common_prefix = os.path.commonprefix(names) if len(names) > 1 else ""
 
     max_len = 0
+    prev = 0
     for i in enum.entry:
-        if i.end_marker:
+        if is_last(i):
             name = "Reserved_%i" % (size * 8 - 1)
         elif i.value == 0 or not is_position(i.value):
             continue
-        else:
-            name = i.name[len(common_prefix):] # strip common prefix
+        pos = int(math.log(i.value, 2))
+        if prev + 1 < pos:
+            lname = len("Reserved_%i" % pos)
+            if max_len < lname:
+                max_len = lname
+
+        name = i.name[len(common_prefix):] # strip common prefix
         name_len = len(normalize_entry_name(name))
         if name_len > max_len:
             max_len = name_len
+        prev = pos
 
+    prev = 0
     for i in enum.entry:
-        if i.end_marker:
-            for j in range(math.ceil(math.log(i.value, 2)), size * 8):
+        if is_last(i):
+            for j in range(math.ceil(math.log(last, 2)), size * 8):
                 name = "Reserved_%i" % j
                 s += "      %s : Boolean := False;\n" % name.ljust(max_len)
             break
@@ -230,45 +265,57 @@ def repr_bitmask(enum, size):
         elif not is_position(i.value):
             print("%s ignored because the composite value!" % i.name)
             continue
+        pos = int(math.log(i.value, 2))
+        if prev + 1 < pos:
+            for j in range(prev + 1, pos):
+                name = "Reserved_%i" % j
+                s += "      %s : Boolean := False;\n" % name.ljust(max_len)
         name = i.name[len(common_prefix):] # strip common prefix
         name = normalize_entry_name(name).title()
         s += "      %s : Boolean := False;\n" % name.ljust(max_len)
+        prev = pos
 
     s += "   end record with Size => %i;\n" % (size * 8)
-    s += format_comment (enum.description, 3) + '\n'
+    s += format_comment(enum.description, 3) + '\n'
 
     parts = ""
+    prev = 0
     s += "   for %s use record\n" % enum_name
     for i in enum.entry:
-        if i.end_marker:
-            for j in range(math.ceil(math.log(i.value, 2)), size * 8):
+        if is_last(i):
+            for j in range(math.ceil(math.log(last, 2)), size * 8):
                 name = "Reserved_%i" % j
                 s += "      %s at 0 range %i .. %i;\n" % (name.ljust(max_len), j, j)
             break
         elif i.value == 0 or not is_position(i.value):
             continue
+        pos = int(math.log(i.value, 2))
+        if prev + 1 < pos:
+            for j in range(prev + 1, pos):
+                name = "Reserved_%i" % j
+                s += "      %s at 0 range %i .. %i;\n" % (name.ljust(max_len), j, j)
         name = i.name[len(common_prefix):] # strip common prefix
         image = name
         name = normalize_entry_name(name).title()
-        pos = int(math.log(i.value, 2))
         s += "      %s at 0 range %i .. %i;\n" % (name.ljust(max_len), pos, pos)
         parts += '\n      & (if V.%s then "%s " else "")' % (name, image)
+        prev = pos
     s += "   end record;\n"
     s += """
    function Image (V : {}) return String is
      ("["{}
       & "]");
-""".format (enum_name, parts)
+""".format(enum_name, parts)
     return s
 
 # Generate enumeration type
-def repr_enum(enum, size, types_files):
-    enum_name = normalize_enum_name(enum.name)
+def repr_enum(enum, name, size, types_files):
+    enum_name = normalize_enum_name(name)
     s = "   type %s is new Interfaces.Unsigned_%i;\n" % (enum_name, size * 8)
     if enum.deprecated:
         s += "   pragma Obsolescent (%s);\n" % enum_name
         s += get_deprecated(enum.deprecated, 3)
-    s += format_comment (enum.description, 3) + '\n'
+    s += format_comment(enum.description, 3) + '\n'
 
     names = [i.name for i in enum.entry if not i.end_marker]
     common_prefix = os.path.commonprefix(names) if len(names) > 1 else ""
@@ -306,7 +353,7 @@ def repr_enum(enum, size, types_files):
         if i.deprecated:
             s += "   pragma Obsolescent (%s);\n" % name
             s += get_deprecated(i.deprecated, 3)
-        s += format_comment (i.description, 3) + '\n'
+        s += format_comment(i.description, 3) + '\n'
 
     predicate += ("\n       | " if predicate else "")
     predicate += (first if first == last else first + " .. " + last)
@@ -327,7 +374,7 @@ def repr_enum(enum, size, types_files):
     return s
 
 # Create file for the types package
-def create_dialect_spec (directory, file_prefix, ver, x, xml, header=None):
+def create_dialect_spec(directory, file_prefix, ver, x, xml, header=None):
     def process_ids(ids, id_name, x):
         for m in x.message:
             if int(m.id) not in ids: ids.append(int(m.id))
@@ -390,7 +437,7 @@ def create_dialect_spec (directory, file_prefix, ver, x, xml, header=None):
     spec.write("end %s.%s;\n" % (ver, dialect.title()))
 
 # Create file for the types package
-def create_types_spec (directory, file_prefix, ver, x, header=None):
+def create_types_spec(directory, file_prefix, ver, x, header=None):
     dialect = file_name(x)
 
     # Create file
@@ -404,13 +451,13 @@ def create_types_spec (directory, file_prefix, ver, x, header=None):
     return spec
 
 # Create file for the message spec
-def create_message_pkg (x, f_name, p_name, ver, m, types_files, header=None):
+def create_message_pkg(x, f_name, p_name, ver, m, types_files, protocol, header=None):
     spec = open(f_name + ".ads", "w", encoding='utf-8')
     spec.write(GEN)
     if header: spec.write(header)
     if m.deprecated:
         spec.write(get_deprecated(m.deprecated, 0))
-    spec.write(format_comment (m.description, 0))
+    spec.write(format_comment(m.description, 0))
     spec.write("\npragma Ada_2022;\n")
 
     # indirect includes
@@ -423,12 +470,15 @@ def create_message_pkg (x, f_name, p_name, ver, m, types_files, header=None):
             inc = os.path.splitext(os.path.basename(types_files[t].filename))[0].title()
             spec.write("with %s.%s.Types; use %s.%s.Types;\n" % (ver, inc, ver, inc))
 
+    if protocol == "Both":
+        spec.write("\nwith MAVLink.Both; use MAVLink.Both;\n")
+
     spec.write("\npackage %s is\n\n" % p_name)
     spec.write("   pragma Pure;\n\n")
     return spec
 
 # Create file for the message body
-def create_message_body (f_name, p_name):
+def create_message_body(f_name, p_name):
     body = open(f_name + ".adb", "w", encoding='utf-8')
     body.write(GEN)
     body.write("package body %s is\n" % p_name)
@@ -451,18 +501,25 @@ def calculate_types_size(xml):
 
     types_size = {t.name: None for t in types}
     for m in msgs:
-        for f in m.fields:
-            if f.enum:
-                if types_size[f.enum] is None:
-                    types_size[f.enum] = f.type_length
+        for field in m.fields:
+            if field.enum:
+                if types_size[field.enum] is None:
+                    types_size[field.enum] = field.type_length
                 else:
-                    assert types_size[f.enum] == f.type_length, "Different size for one enum"
+                    # create enums for each size
+                    # to handle GIMBAL_DEVICE_CAP_FLAGS that have
+                    # different values and sizes for different messages
+                    if types_size[field.enum] != field.type_length:
+                        types_size[field.enum + str(types_size[field.enum])] = types_size[field.enum]
+                        types_size[field.enum + str(field.type_length)] = field.type_length
+                        del types_size[field.enum]
+                    # assert types_size[field.enum] == field.type_length, "Different size for %s enum" % field.enum
     return types, types_size, types_files
 
 # Generate v1 types
 def generate_v1_types(directory, x, types_files, types_size):
     dialect = pkg_name(x)
-    outf = create_types_spec (directory, v1_file, v1, x, copy)
+    outf = create_types_spec(directory, v1_file, v1, x, copy)
 
     for t in x.enum:
         size = types_size[t.name]
@@ -473,14 +530,20 @@ def generate_v1_types(directory, x, types_files, types_size):
 
         if size is not None:
             if t.bitmask:
-                outf.write(repr_bitmask(t, size))
+                outf.write(repr_bitmask(t, t.name, size))
             else:
-                outf.write(repr_enum(t, size, types_files))
+                outf.write(repr_enum(t, t.name, size, types_files))
             outf.write("\n")
     outf.write("end %s.%s.Types;\n" % (v1, dialect.title()))
 
 # return default value for record field
 def get_default(value, type_name, array_to_float, types):
+    if type_name == "String":
+        if value[0] == '[':
+            return "[others => Character'Val (%s)]" % value[1:-1]
+        else:
+            return "[others => Character'Val (%s)]" % value
+
     if value[0] == '[':
         if type_name in array_to_float:
             return "[others => %s]" % get_default(value[1:-1], array_to_float[type_name], array_to_float, types)
@@ -516,9 +579,6 @@ def get_default(value, type_name, array_to_float, types):
                 else:
                     return "To_Raw (%s)" % value
 
-            elif type_name == "String":
-                return "Character'Val (%s)" % value
-
             else:
                 for t in types:
                     if normalize_enum_name(t.name) == type_name and not t.bitmask:
@@ -526,6 +586,9 @@ def get_default(value, type_name, array_to_float, types):
                         if value in values:
                             common_prefix = os.path.commonprefix(values) if len(values) > 1 else ""
                             return normalize_entry_name(value[len(common_prefix):]).title()
+
+                if type_name == "Unsigned_8_Array" and value[-1] == ",":
+                    return value[:-1]
 
                 return value
 
@@ -549,8 +612,8 @@ def generate_message_representation(msg, spec, max_len):
         offset += field_size / 8
     spec.write("   end record;\n\n")
 
-def generate_message_methods(name, rev, spec, is_v1):
-    if is_v1:
+def generate_message_methods(name, rev, spec, protocol):
+    if rev == v1 and protocol != "Both":
         mode = "in out "
     else:
         mode = ""
@@ -615,9 +678,9 @@ def generate_message_methods(name, rev, spec, is_v1):
    --  Returns True if CRC is valid
 
 """
-    spec.write(out.format(name, rev, mode))
+    spec.write(out.format(name, Mav + protocol, mode))
 
-def generate_message_methods_V2(name, spec):
+def generate_message_methods_V2(name, spec, protocol):
     out = """   procedure Encode
      (Message : {0};
       Connect : in out {1}.Connection;
@@ -633,10 +696,10 @@ def generate_message_methods_V2(name, spec):
       Last    : out Positive);
 
 """
-    spec.write(out.format(name, v2))
+    spec.write(out.format(name, Mav + protocol))
 
 # Generate message body
-def generate_message_body_encode (name, rev, extra, body, is_v1, connection):
+def generate_message_body_encode(name, rev, extra, body, protocol, connection):
     out = """
    ------------
    -- Encode --
@@ -660,9 +723,9 @@ def generate_message_body_encode (name, rev, extra, body, is_v1, connection):
       Encode (Connect, {0}_Id, {3}, Buffer, Last);
    end Encode;
 """
-    body.write(out.format(name, rev, connection, extra))
+    body.write(out.format(name, Mav + protocol, connection, extra))
 
-    if not is_v1:
+    if rev == v2:
         out = """
    ------------
    -- Encode --
@@ -687,10 +750,10 @@ def generate_message_body_encode (name, rev, extra, body, is_v1, connection):
       Encode (Connect, {0}_Id, {3}, Sign, Buffer, Last);
    end Encode;
 """
-        body.write(out.format(name, rev, connection, extra))
+        body.write(out.format(name, Mav + protocol, connection, extra))
 
-def generate_message_body_decode(name, rev, extra, body, is_v1, connection):
-    if is_v1:
+def generate_message_body_decode(name, rev, body, protocol, connection):
+    if rev == v1 and protocol != "Both":
         mode = "in out "
     else:
         mode = ""
@@ -705,9 +768,9 @@ def generate_message_body_decode(name, rev, extra, body, is_v1, connection):
       Connect   : %s%s.%s;
       CRC_Valid : out Boolean)
    is
-""" % (name, mode, rev, connection))
+""" % (name, mode, Mav + protocol, connection))
 
-    if is_v1:
+    if rev == v1:
         body.write("""      Buf : Data_Buffer (1 .. %s'Size / 8)
         with Import,
         Address    => Message'Address,
@@ -748,8 +811,8 @@ def generate_message_body_decode(name, rev, extra, body, is_v1, connection):
      (Message : out %s;
       Connect : %s.%s)
    is
-""" % (name, rev, connection))
-    if is_v1:
+""" % (name, Mav + protocol, connection))
+    if rev == v1:
         body.write("""      Buf : Data_Buffer
         (1 .. %s'Size / 8) := [others => 0]
         with Address => Message'Address,
@@ -773,8 +836,8 @@ def generate_message_body_decode(name, rev, extra, body, is_v1, connection):
 """ % (name, name))
     body.write("   end Decode;\n")
 
-def generate_message_body_crc(rev, extra, body, connection, is_v1):
-    if is_v1:
+def generate_message_body_crc(rev, extra, body, connection, protocol):
+    if rev == v1 and protocol != "Both":
         mode = "in out "
     else:
         mode = ""
@@ -789,18 +852,18 @@ def generate_message_body_crc(rev, extra, body, connection, is_v1):
    begin
       return Is_CRC_Valid (Connect, %s);
    end Check_CRC;
-""" % (mode, rev, connection, extra))
+""" % (mode, Mav + protocol, connection, extra))
 
-def generate_message_body(name, rev, extra, body, is_v1):
-    generate_message_body_encode(name, rev, extra, body, is_v1, "Connection")
-    generate_message_body_encode(name, rev, extra, body, is_v1, "Out_Connection")
-    generate_message_body_decode(name, rev, extra, body, is_v1, "Connection")
-    generate_message_body_decode(name, rev, extra, body, is_v1, "In_Connection")
-    generate_message_body_crc(rev, extra, body, "Connection", is_v1)
-    generate_message_body_crc(rev, extra, body, "In_Connection", is_v1)
+def generate_message_body(name, rev, extra, body, protocol):
+    generate_message_body_encode(name, rev, extra, body, protocol, "Connection")
+    generate_message_body_encode(name, rev, extra, body, protocol, "Out_Connection")
+    generate_message_body_decode(name, rev, body, protocol, "Connection")
+    generate_message_body_decode(name, rev, body, protocol, "In_Connection")
+    generate_message_body_crc(rev, extra, body, "Connection", protocol)
+    generate_message_body_crc(rev, extra, body, "In_Connection", protocol)
 
 # Generate message for the V1
-def generate_v1_message(msg, spec, body, xml, types):
+def generate_v1_message(msg, spec, body, xml, types, protocol):
     name = normalize_message_name(msg.name)
 
     max_len = 0
@@ -826,7 +889,7 @@ def generate_v1_message(msg, spec, body, xml, types):
                 spec.write("%s (1 .. %i)" % (tp, field.array_length))
             elif field.enum:
                 tp = normalize_enum_name(field.enum)
-                if field_name == tp: tp = find_pkg (xml, tp, v1)
+                if field_name == tp: tp = find_pkg(xml, tp, v1)
                 spec.write(tp)
             else:
                 tp = field_types[field.type]
@@ -846,11 +909,11 @@ def generate_v1_message(msg, spec, body, xml, types):
         spec.write("   pragma Obsolescent (%s);\n\n" % name)
 
     generate_message_representation(msg, spec, max_len)
-    generate_message_methods(name, v1, spec, True)
-    generate_message_body(name, v1, str(msg.crc_extra), body, True)
+    generate_message_methods(name, v1, spec, protocol)
+    generate_message_body(name, v1, str(msg.crc_extra), body, protocol)
 
 # Generate test project
-def generate_test_project(directory, ver):
+def generate_test_project(directory, protocol):
     dir = os.path.join(directory, 'tests')
     mavparse.mkdir_p(dir)
 
@@ -875,7 +938,7 @@ project Test is
       for Switches ("ada") use ("-g");
    end Linker;
 
-end Test;""" % ver)
+end Test;""" % protocol)
 
 # Generate test project for V1
 def generate_test_v1(directory, xml, bitmasks):
@@ -896,7 +959,8 @@ def generate_test_v1(directory, xml, bitmasks):
     f.write("""\nwith Ada.Text_IO;
 
 pragma Warnings (Off); --  prevent "not used"
-with MAVLink.Raw_Floats; use MAVLink.Raw_Floats;
+with MAVLink;                 use MAVLink;
+with MAVLink.Raw_Floats;      use MAVLink.Raw_Floats;
 with MAVLink.Raw_Long_Floats; use MAVLink.Raw_Long_Floats;
 pragma Warnings (On);
 
@@ -960,9 +1024,11 @@ begin
    begin
       Encode (O, Out_Connect, Buffer, Last);
 
-      for Index in Buffer'First .. Last loop
+      for Index in Buffer'First .. Last - 1 loop
          Res := Parse_Byte (In_Connect, Buffer (Index));
+         pragma Assert (not Res);
       end loop;
+      Res := Parse_Byte (In_Connect, Buffer (Last));
       pragma Assert (Res);
 
       Decode (I, In_Connect, Res);
@@ -997,6 +1063,15 @@ pre_files_v1 = (
 
 def generate(directory, xml):
     '''generate complete Ada implementation'''
+    global both
+    both = os.getenv("ADA_BOTH_PROTOCOLS", None) != None
+    protocol = ""
+
+    if both:
+        protocol = "Both"
+    else:
+        protocol = "V1"
+
     mavparse.mkdir_p(directory)
 
     bitmasks = []
@@ -1014,16 +1089,16 @@ def generate(directory, xml):
         for t in x.enum:
             if t.bitmask: bitmasks.append(t.name)
 
-        create_dialect_spec (directory, v1_file, v1, x, xml, copy)
+        create_dialect_spec(directory, v1_file, v1, x, xml, copy)
         generate_v1_types(directory, x, types_files, types_size)
 
         #Generate messages
         for m in x.message:
             f_name, p_name = get_pakage_name(x, m, directory, v1, "v1")
 
-            spec = create_message_pkg (x, f_name, p_name, v1, m, types_files, copy)
-            body = create_message_body (f_name, p_name)
-            generate_v1_message(m, spec, body, xml, types)
+            spec = create_message_pkg(x, f_name, p_name, v1, m, types_files, protocol, copy)
+            body = create_message_body(f_name, p_name)
+            generate_v1_message(m, spec, body, xml, types, protocol)
             spec.write("end %s;\n" % p_name)
             body.write("\nend %s;\n" % p_name)
     generate_test_v1(directory, xml, bitmasks)
@@ -1062,27 +1137,37 @@ def calculate_bitmask_size(bitmask):
     return math.ceil(c / 8)
 
 # generate types and place them into Mavlink.`dialect` package
-def generate_v2_types (directory, x, types_files, types_size):
-    name = pkg_name(x)
-    spec = create_types_spec (directory, v2_file, v2, x)
+def generate_v2_types(directory, x, types_files, types_size):
+    pkgname = pkg_name(x)
+    spec = create_types_spec(directory, v2_file, v2, x)
 
     # Generate types
     for t in x.enum:
-        size = types_size[t.name]
-
-        if t.bitmask:
-            if size is None: size = calculate_bitmask_size(t)
-            spec.write(repr_bitmask(t, size))
-
+        if t.name in types_size:
+            size = types_size[t.name]
+            generate_v2enum(t, t.name, size, spec, types_files)
         else:
-            if size is None: size = calculate_enum_size(t)
-            spec.write(repr_enum(t, size, types_files))
-        spec.write("\n")
+            for name, size in types_size.items():
+                if name.startswith(t.name):
+                    generate_v2enum(
+                        t, name, size, spec, types_files
+                    )
 
-    spec.write("end %s.%s.Types;\n" % (v2, name))
+    spec.write("end %s.%s.Types;\n" % (v2, pkgname))
+
+#Generate enumeration
+def generate_v2enum(t, name, size, spec, types_files):
+    if t.bitmask:
+        if size is None: size = calculate_bitmask_size(t)
+        spec.write(repr_bitmask(t, name, size))
+
+    else:
+        if size is None: size = calculate_enum_size(t)
+        spec.write(repr_enum(t, name, size, types_files))
+    spec.write("\n")
 
 #Generate message
-def generate_v2_message(msg, spec, body, xml, types):
+def generate_v2_message(msg, spec, body, xml, types, protocol, types_size):
     name = normalize_message_name(msg.name)
 
     max_len = 0
@@ -1106,15 +1191,21 @@ def generate_v2_message(msg, spec, body, xml, types):
 
             elif field.enum:
                 tp = normalize_enum_name(field.enum)
-                if field_name == tp: tp = find_pkg (xml, tp, v2)
-                spec.write(tp)
+                if field_name == tp: tp = find_pkg(xml, tp, v2)
+                if field.enum in types_size:
+                    spec.write(tp)
+                else:
+                    spec.write(tp + str(field.type_length))
 
             else:
                 tp = field_types[field.type]
                 spec.write(tp)
 
         if field.invalid:
-            s = get_default(field.invalid, tp, array_to_float, types)
+            if field.enum:
+                s = get_default_enum(field, tp, array_to_float, types, xml)
+            else:
+                s = get_default(field.invalid, tp, array_to_float, types)
             if s != "":
                 spec.write(" :=\n        %s" % s)
 
@@ -1127,9 +1218,26 @@ def generate_v2_message(msg, spec, body, xml, types):
         spec.write("   pragma Obsolescent (%s);\n\n" % name)
 
     generate_message_representation(msg, spec, max_len)
-    generate_message_methods(name, v2, spec, False)
-    generate_message_methods_V2(name, spec)
-    generate_message_body(name, v2, str(msg.crc_extra), body, False)
+    generate_message_methods(name, v2, spec, protocol)
+    generate_message_methods_V2(name, spec, protocol)
+    generate_message_body(name, v2, str(msg.crc_extra), body, protocol)
+
+# returns default value for enum
+def get_default_enum(field, tp, array_to_float, types, xml):
+    def process():
+        for x in xml:
+            for t in x.enum:
+                if t.name == field.enum:
+                    if t.bitmask and field.invalid == "0":
+                        return "(others => False)"
+                    elif t.bitmask and field.invalid == "1":
+                        return "(others => True)"
+        return ""
+
+    s = process()
+    if s == "":
+        s = get_default(field.invalid, tp, array_to_float, types)
+    return s
 
 # Find package name
 def find_package(xml, name):
@@ -1140,16 +1248,27 @@ def find_package(xml, name):
     return ""
 
 # Generate test project for V2
-def generate_test_v2(directory, xml, bitmasks):
+def generate_test_v2(directory, xml, bitmasks, protocol):
     Has_Common = False
+    Exception = ["Gopro_get_responses", "Gopro_set_responses", "Log_erases"]
+
     dir = os.path.join(directory, 'tests')
-    generate_test_project(directory, "v2")
+    generate_test_project(directory, protocol.lower())
 
     f = open(os.path.join(dir, "test.adb"), "w", encoding='utf-8')
 
     f.write("\npragma Warnings (Off); --  prevent `not used`\n")
     for x in xml:
         f.write("with %s.%s.Types;\n" % (v2, file_name(x).title()))
+
+    if protocol == "Both":
+        pattern = re.compile(r"^mavlink-v1-([a-z]+)-types.ads$")
+        for filename in os.listdir(directory):
+            if os.path.isfile(os.path.join(directory, filename)):
+                match = pattern.search(filename)
+                if match:
+                    f.write("with %s.%s.Types;\n" % (v1, match.group(1).capitalize()))
+
     f.write("pragma Warnings (On);\n\n")
 
     for x in xml:
@@ -1157,19 +1276,31 @@ def generate_test_v2(directory, xml, bitmasks):
             f_name, p_name = get_pakage_name(x, m, directory, v2, "v2")
             f.write("with %s;\n" % p_name)
 
+    if protocol == "Both":
+        pattern = re.compile(r"^mavlink-v1-([a-z]+)-([a-z,_]+).ads$")
+        for filename in os.listdir(directory):
+            if os.path.isfile(os.path.join(directory, filename)):
+                match = pattern.search(filename)
+                if match and match.group(2) != "types":
+                    f.write("with MAVLink.V1.%s.%s;\n" % (match.group(1).capitalize(), match.group(2).capitalize()))
+
     f.write("""\nwith Ada.Text_IO;
 
 pragma Warnings (Off); --  prevent "not used"
+with MAVLink;                 use MAVLink;
 with MAVLink.Raw_Floats;      use MAVLink.Raw_Floats;
 with MAVLink.Raw_Long_Floats; use MAVLink.Raw_Long_Floats;
 with MAVLink.SHA_256;
 with Interfaces;
 pragma Warnings (On);
+""");
 
-use MAVLink.V2;
+    f.write("""\nwith MAVLink.%s; use MAVLink.%s;\n""" % (protocol, protocol));
+    if protocol == "Both":
+        f.write("""\nwith MAVLink.V1; use MAVLink.V1;""");
+        f.write("""\nwith MAVLink.V2; use MAVLink.V2;""");
 
-procedure Test
-is""");
+    f.write("""\nprocedure Test is\n""");
 
     for x in xml:
         if "common.xml" in x.filename:
@@ -1229,23 +1360,30 @@ is""");
       189, 152, 194, 72,  122, 99]; --  SHA
 """)
 
+    parse_type = ""
+    if protocol == "Both":
+        parse_type = "Parse_Result"
+    else:
+        parse_type = "Boolean"
+
     f.write("""
-   Sig         : MAVLink.V2.Signature;
-   In_Connect  : MAVLink.V2.Connection;
-   Out_Connect : MAVLink.V2.Out_Connection;
+   Sig         : Signature;
+   In_Connect  : Connection;
+   Out_Connect : Out_Connection;
    Pass        : constant String := "long_password";
    Pass_Data   : Signature_Key (1 .. Pass'Length) with Import,
      Address => Pass'Address;
-   Res         : Boolean;
+   Res         : %s;
+   Dummy       : Boolean;
 
    Seq         : Sequence_Id_Type;
    Sys_Id      : System_Id_Type;
    Comp_Id     : Component_Id_Type;
-   Id          : Msg_Id;
+   Id          : MAVLink.V2.Msg_Id;
    Link_Id     : Link_Id_Type;
    Timestamp   : Timestamp_Type;
    Signature   : Three_Boolean;
-   Buffer      : Data_Buffer (1 .. MAVLink.V2.Maximum_Buffer_Len);
+   Buffer      : Data_Buffer (1 .. Maximum_Buffer_Len);
    Last        : Positive;
 
    use type Interfaces.Unsigned_8;
@@ -1256,10 +1394,10 @@ begin
    Set_Component_Id (In_Connect, 1);
    Set_System_Id (Out_Connect, 1);
    Set_Component_Id (Out_Connect, 1);
-""")
+""" % parse_type)
 
     if Has_Common:
-        f.write("""
+        out = """
    Do_SHA_256_Test (D1, R1);
    Do_SHA_256_Test (D2, R2);
    Do_SHA_256_Test (D3, R3);
@@ -1270,7 +1408,7 @@ begin
    loop
       Res := Parse_Byte (In_Connect, Hygrometer_Sensors_Data (Index));
    end loop;
-   pragma Assert (Res);
+   pragma Assert ({0});
 
    pragma Assert (Get_Msg_Length (In_Connect) = 5);
 
@@ -1300,7 +1438,7 @@ begin
       for Index in Buffer'First .. Last loop
          Res := Parse_Byte (In_Connect, Buffer (Index));
       end loop;
-      pragma Assert (Res);
+      pragma Assert ({0});
 
       Get_Message_Information
         (In_Connect, Sig, Seq, Sys_Id, Comp_Id, Id, Link_Id, Timestamp, Signature);
@@ -1313,12 +1451,37 @@ begin
       pragma Assert (Timestamp = 200);
       pragma Assert (Signature = True);
 
-      Decode (O, In_Connect, Res);
+      Decode (O, In_Connect, Dummy);
       pragma Assert (M = O);
    end;
 
-""")
+"""
+        if protocol == "Both":
+            f.write(out.format("Res = Version_2"))
+        else:
+            f.write(out.format("Res"))
 
+    out = """);
+   begin
+      Encode (O, Out_Connect, Sig, Buffer, Last);
+
+      for Index in Buffer'First .. Last - 1 loop
+         Res := Parse_Byte (In_Connect, Buffer (Index));
+         pragma Assert ({0});
+      end loop;
+      Res := Parse_Byte (In_Connect, Buffer (Last));
+      pragma Assert ({1});
+
+      Get_Message_Information
+        (In_Connect, Sig, Seq, Sys_Id, Comp_Id, Id, Link_Id, Timestamp, Signature);
+      pragma Assert (Signature = True);
+
+      Decode (I, In_Connect, Dummy);
+      pragma Assert (Dummy);
+      pragma Assert (I = O);
+   end;
+
+"""
     for x in xml:
         for m in x.message:
             msg = normalize_message_name(m.name)
@@ -1359,27 +1522,45 @@ begin
                 else:
                     f.write(",\n          %s => %s" % (field_name, value))
 
-            f.write(""");
-   begin
-      Encode (O, Out_Connect, Sig, Buffer, Last);
+            if protocol == "Both":
+                f.write(out.format("Res = None", "Res = Version_2"))
+            else:
+                f.write(out.format("not Res", "Res"))
+
+    if protocol == "Both":
+        pattern = re.compile(r"^mavlink-v1-([a-z]+)-([a-z,_]+).ads$")
+        for filename in os.listdir(directory):
+            if os.path.isfile(os.path.join(directory, filename)):
+                match = pattern.search(filename)
+                if match and match.group(2) != "types":
+                    N = match.group(2).capitalize()
+                    T = ""
+                    if N[-3:] == "ses" and N not in Exception:
+                        T = N[:-2]
+                    else:
+                        T = N[:-1]
+                    f.write("""   declare
+      use MAVLink.V1.%s.%s;
+      I : %s;
+      O : constant %s := (others => <>);\n""" %
+        (match.group(1).capitalize(), N, T, T))
+
+                    f.write("""   begin
+      Encode (O, Out_Connect, Buffer, Last);
 
       for Index in Buffer'First .. Last - 1 loop
          Res := Parse_Byte (In_Connect, Buffer (Index));
-         pragma Assert (not Res);
+         pragma Assert (Res = None);
       end loop;
       Res := Parse_Byte (In_Connect, Buffer (Last));
-      pragma Assert (Res);
+      pragma Assert (Res = Version_1);
 
-      Get_Message_Information
-        (In_Connect, Sig, Seq, Sys_Id, Comp_Id, Id, Link_Id, Timestamp, Signature);
-      pragma Assert (Signature = True);
-
-      Decode (I, In_Connect, Res);
-      pragma Assert (Res);
+      Decode (I, In_Connect, Dummy);
+      pragma Assert (Dummy);
       pragma Assert (I = O);
    end;
-
 """)
+
     f.write("""   begin
       pragma Warnings (Off);
       --  Should be raised to ensure we compiled
@@ -1408,11 +1589,25 @@ pre_files_v2 = (
     'mavlink-sha_256.adb'
 )
 
+pre_files_both = (
+    'mavlink-v1.ads',
+    'mavlink-v2.ads',
+    'mavlink_both.gpr',
+    'mavlink-both.ads',
+    'mavlink-both.adb',
+    'mavlink-sha_256.ads',
+    'mavlink-sha_256.adb'
+)
+
 def generate_v2(directory, xml):
     '''generate complete Ada implementation for v2'''
+    global both
+    both = os.getenv("ADA_BOTH_PROTOCOLS", None) != None
+
     mavparse.mkdir_p(directory)
 
     bitmasks = []
+    protocol = ""
 
     types, types_size, types_files = calculate_types_size(xml)
 
@@ -1421,29 +1616,44 @@ def generate_v2(directory, xml):
     for f in pre_files_v1_for_v2:
         shutil.copy(os.path.join(srcpath, f), directory)
 
-    srcpath = os.path.join(basepath, 'Ada', 'v2')
-    for f in pre_files_v2:
-        shutil.copy(os.path.join(srcpath, f), directory)
+    if both:
+        srcpath = os.path.join(basepath, 'Ada', 'both')
+        protocol = "Both"
+
+        Path(os.path.join(directory, "mavlink-v1.adb")).unlink(missing_ok=True)
+        Path(os.path.join(directory, "mavlink-v2.adb")).unlink(missing_ok=True)
+        p = Path(os.path.join(directory, "examples"))
+        if os.path.exists(p):
+            shutil.rmtree(p)
+
+        for f in pre_files_both:
+            shutil.copy(os.path.join(srcpath, f), directory)
+
+    else:
+        srcpath = os.path.join(basepath, 'Ada', 'v2')
+        protocol = "V2"
+        for f in pre_files_v2:
+            shutil.copy(os.path.join(srcpath, f), directory)
 
     for x in xml:
         for t in x.enum:
             if t.bitmask: bitmasks.append(t.name)
 
         # Mavlink.`dialect`
-        create_dialect_spec (directory, v2_file, v2, x, xml)
-        generate_v2_types (directory, x, types_files, types_size)
+        create_dialect_spec(directory, v2_file, v2, x, xml)
+        generate_v2_types(directory, x, types_files, types_size)
 
         #Generate messages
         for m in x.message:
             f_name, p_name = get_pakage_name(x, m, directory, v2, "v2")
 
-            spec = create_message_pkg (x, f_name, p_name, v2, m, types_files)
-            body = create_message_body (f_name, p_name)
-            generate_v2_message(m, spec, body, xml, types)
+            spec = create_message_pkg(x, f_name, p_name, v2, m, types_files, protocol)
+            body = create_message_body(f_name, p_name)
+            generate_v2_message(m, spec, body, xml, types, protocol, types_size)
             spec.write("end %s;\n" % p_name)
             body.write("\nend %s;\n" % p_name)
 
-        def create_renames (c):
+        def create_renames(c):
             for m in c.message:
                 f_name, p_name = get_pakage_name(x, m, directory, v2, "v2")
                 fc_name, pc_name = get_pakage_name(c, m, directory, v2, "v2")
@@ -1451,7 +1661,7 @@ def generate_v2(directory, xml):
                 spec.write(GEN)
                 if m.deprecated:
                     spec.write(get_deprecated(m.deprecated, 0))
-                spec.write(format_comment (m.description, 0))
+                spec.write(format_comment(m.description, 0))
                 spec.write("\npragma Ada_2022;\n")
                 spec.write("\nwith %s;\n" % pc_name)
                 spec.write("\npackage %s\nrenames %s;\n" % (p_name, pc_name))
@@ -1463,6 +1673,6 @@ def generate_v2(directory, xml):
                     if i in t.filename:
                         process_dialect(t, True)
 
-        process_dialect (x, False)
+        process_dialect(x, False)
 
-    generate_test_v2(directory, xml, bitmasks)
+    generate_test_v2(directory, xml, bitmasks, protocol)
